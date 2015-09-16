@@ -1,0 +1,241 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# (c) 2012, Michael DeHaan <michael.dehaan@gmail.com>
+#
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+########################################################
+
+__requires__ = ['ansible']
+try:
+    import pkg_resources
+except Exception:
+    # Use pkg_resources to find the correct versions of libraries and set
+    # sys.path appropriately when there are multiversion installs.  But we
+    # have code that better expresses the errors in the places where the code
+    # is actually used (the deps are optional for many code paths) so we don't
+    # want to fail here.
+    pass
+
+import os
+import sys
+
+from ansible.runner import Runner
+import ansible.constants as C
+from ansible import utils
+from ansible import errors
+from ansible import callbacks
+from ansible import inventory
+########################################################
+
+class Cli(object):
+    # 该客户端仅用于Ansible-adhoc使用，不同的命令有不同的客户端类，在ansible2.0版本中似乎进行了统一
+    ''' code behind bin/ansible '''
+
+    # ----------------------------------------------
+
+    def __init__(self):
+        # 初始化状态类 {'skipped': {}, 'ok': {}, 'changed': {}, 'dark': {}, 'processed': {}, 'failures': {}}
+        self.stats = callbacks.AggregateStats()
+        # 初始化回调类 {'options': None, '_async_notified': {}}
+        self.callbacks = callbacks.CliRunnerCallbacks()
+        if C.DEFAULT_LOAD_CALLBACK_PLUGINS:
+            callbacks.load_callback_plugins()
+
+    # ----------------------------------------------
+
+    def parse(self):
+        ''' create an options parser for bin/ansible '''
+        # 解析ansible-adhoc命令的输入参数
+
+        parser = utils.base_parser(
+            constants=C,
+            runas_opts=True,
+            subset_opts=True,
+            async_opts=True,
+            output_opts=True,
+            connect_opts=True,
+            check_opts=True,
+            diff_opts=False,
+            usage='%prog <host-pattern> [options]'
+        )
+
+        parser.add_option('-a', '--args', dest='module_args',
+            help="module arguments", default=C.DEFAULT_MODULE_ARGS)
+        parser.add_option('-m', '--module-name', dest='module_name',
+            help="module name to execute (default=%s)" % C.DEFAULT_MODULE_NAME,
+            default=C.DEFAULT_MODULE_NAME)
+
+        # (Pdb) options <Values at 0x1db60200: {'subset': None, 'ask_pass': False, 'become_user': None, 'poll_interval': 15, 'sudo': False, 'private_key_file': None, 'one_line': None, 'check': False, 'remote_user': 'apps', 'become_method': 'sudo', 'vault_password_file': None, 'ask_su_pass': False, 'become_ask_pass': False, 'inventory': 'hosts', 'forks': 5, 'listhosts': None, 'module_name': 'ping', 'seconds': 0, 'module_path': None, 'su_user': None, 'ask_sudo_pass': False, 'extra_vars': [], 'tree': None, 'su': False, 'connection': 'smart', 'ask_vault_pass': False, 'timeout': 10, 'become': False, 'sudo_user': None, 'module_args': ''}>
+        # (Pdb) args
+        # self = <__main__.Cli object at 0x1db5d310>
+        # options 为参数解析的结果，args为Cli类
+        options, args = parser.parse_args()
+        # 设置回调函数的options 为参数解析后的options
+        # args 表示的是任何未具有option的value，比如 -i hosts test 其中 -i 是option，hosts为-i的结果，而test则会放到args里面
+
+        self.callbacks.options = options
+
+        # ansible在解析参数的时候将具体inventory中的group/host 存入到args中
+        # 比如 ansible all -m "ping" : args = ['all']
+        # ansible -i hosts test -m "ping": args = ['test']
+        # ansible -i hosts 10.201.51.190 -m "ping" : args = ['10.201.51.190']
+        # ansible 执行之前会校验是否找到了具体的host，如果host未输入或host长度大于1，则报错退出！
+        # 既 ansible -m "ping" 或 ansible -i hosts 10.201.51.190 10.201.43.175 都是无效的！
+        if len(args) == 0 or len(args) > 1:
+            parser.print_help()
+            sys.exit(1)
+
+        # privlege escalation command line arguments need to be mutually exclusive
+        # 检测相关权限参数是否出现冲突
+        utils.check_mutually_exclusive_privilege(options, parser)
+
+        if (options.ask_vault_pass and options.vault_password_file):
+            parser.error("--ask-vault-pass and --vault-password-file are mutually exclusive")
+
+        return (options, args)
+
+    # ----------------------------------------------
+
+    def run(self, options, args):
+        ''' use Runner lib to do SSH things '''
+        ''' 使用 Runner lib 进行SSH 命令执行 '''
+
+        pattern = args[0]
+
+        sshpass = becomepass = vault_pass = become_method = None
+
+        # Never ask for an SSH password when we run with local connection
+        # 本地链接情况下，不询问SSH密码
+        if options.connection == "local":
+            options.ask_pass = False
+        else:
+            options.ask_pass = options.ask_pass or C.DEFAULT_ASK_PASS
+
+        options.ask_vault_pass = options.ask_vault_pass or C.DEFAULT_ASK_VAULT_PASS
+
+        # become
+        # Ansible的become功能设置，设置become method，become user 以及shpass, becomepass, vault_pass
+        utils.normalize_become_options(options)
+        prompt_method = utils.choose_pass_prompt(options)
+        (sshpass, becomepass, vault_pass) = utils.ask_passwords(ask_pass=options.ask_pass, become_ask_pass=options.become_ask_pass, ask_vault_pass=options.ask_vault_pass, become_method=prompt_method)
+
+        # read vault_pass from a file
+        # 从文件中读取加密的密码
+        if not options.ask_vault_pass and options.vault_password_file:
+            vault_pass = utils.read_vault_file(options.vault_password_file)
+
+        # 解析通过 -e EXTRA_VARS, --extra-vars=EXTRA_VARS 方式输入的变量。
+        extra_vars = utils.parse_extra_vars(options.extra_vars, vault_pass)
+
+        # Inventory管理
+        inventory_manager = inventory.Inventory(options.inventory, vault_password=vault_pass)
+
+        # subset用来对inventory进行二次限制，适用于对N个主机中某几个主机执行固定任务的做法，一般用于重试
+        if options.subset:
+            inventory_manager.subset(options.subset)
+        # 根据pattern和subset进行hosts列表限制
+        # 比如说你的输入命令为： ansible -i inventory pattern -m "ping" --limit=subset
+        # 那么hosts的结果就是符合pattern的hosts减去subset列表。
+        hosts = inventory_manager.list_hosts(pattern)
+
+        if len(hosts) == 0: # 如果匹配的hosts对象列表长度为0，则退出。
+            callbacks.display("No hosts matched", stderr=True)
+            sys.exit(0)
+
+        if options.listhosts: # 如果输入了 --list-hosts选项，则直接打印出host列表并退出！
+            for host in hosts:
+                callbacks.display('    %s' % host)
+            sys.exit(0)
+
+        if options.module_name in ['command','shell'] and not options.module_args: # 如果使用command和shell模块而没有传递参数，则退出
+            callbacks.display("No argument passed to %s module" % options.module_name, color='red', stderr=True)
+            sys.exit(1)
+
+        if options.tree: # 如果指定了 --tree 选项，则将日志输入到该目录中
+            utils.prepare_writeable_dir(options.tree) # 确认目录存在且可写，如果目录不存在则创建，返回目录的绝对路径地址。
+
+        # 初始化Runner类
+        runner = Runner(
+            module_name=options.module_name, # 模块名称
+            module_path=options.module_path, # 模块路径
+            module_args=options.module_args, # 模块参数
+            remote_user=options.remote_user, # 远程用户
+            remote_pass=sshpass, # ssh密码
+            inventory=inventory_manager, # inventory
+            timeout=options.timeout, # 超时，通过 --timeout设定
+            private_key_file=options.private_key_file, # 私钥文件
+            forks=options.forks, # 子进程数量，通过 --forks 指定
+            pattern=pattern, # host_pattern
+            callbacks=self.callbacks, # 回调对象，用于输出结果
+            transport=options.connection, # transport类型，--connection选型，默认smart，支持openssh、paramiko和local，优先选择openssh
+            subset=options.subset, # 过滤host列表，通过 --limit指定
+            check=options.check, # 是否是check模式，通过 --check指定，dry run模式
+            diff=options.check,
+            vault_pass=vault_pass, # 加密密码
+            become=options.become, # 是否需要切换用户
+            become_method=options.become_method, # 切换用户方法，在 [ sudo | su | pbrun | pfexec | runas ] 中选择，默认sudo。
+            become_pass=becomepass, # 切换用户所需的密码
+            become_user=options.become_user, # run operations as this user
+            extra_vars=extra_vars, # 外部变量
+        )
+
+        if options.seconds:
+            # 通过-B SECONDS, --background=SECONDS 设定，异步运行服务，超过秒数后超时退出
+            callbacks.display("background launch...\n\n", color='cyan') # cyan是青色
+            results, poller = runner.run_async(options.seconds) # 异步运行
+            results = self.poll_while_needed(poller, options) # 获得最终结果
+        else:
+            results = runner.run() # 同步运行runner.run()，得到结果
+
+        return (runner, results) # 返回runner对象和results
+
+    # ----------------------------------------------
+
+    def poll_while_needed(self, poller, options):
+        ''' summarize results from Runner '''
+
+        # BACKGROUND POLL LOGIC when -B and -P are specified
+        if options.seconds and options.poll_interval > 0:
+            poller.wait(options.seconds, options.poll_interval)
+
+        return poller.results
+
+
+########################################################
+
+if __name__ == '__main__':
+    callbacks.display("", log_only=True)
+    # display函数用来打印log和显示结果，此处表示打印一行空日志，如下所示：
+    # 2015-09-11 15:58:58,038 p=20436 u=apps |
+    callbacks.display(" ".join(sys.argv), log_only=True)
+    callbacks.display("", log_only=True)
+
+    cli = Cli()
+    # 解析命令行参数
+    (options, args) = cli.parse()
+    try:
+        (runner, results) = cli.run(options, args) # 调用cli的run函数运行命令，将结果捕获到results里
+        for result in results['contacted'].values():
+            if 'failed' in result or result.get('rc', 0) != 0: # 判断结果是否异常
+                sys.exit(2)
+        if results['dark']:
+            sys.exit(3)
+    except errors.AnsibleError, e:
+        # Generic handler for ansible specific errors
+        callbacks.display("ERROR: %s" % str(e), stderr=True, color='red') # 打印异常信息
+        sys.exit(1)
+
