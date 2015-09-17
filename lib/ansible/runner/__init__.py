@@ -171,6 +171,7 @@ class Runner(object):
             complex_args = {}
 
         # storage & defaults
+        # 属性初始化，utils.default函数判断变量是否为空，如果为空则使用lambda函数的返回值
         self.check            = check
         self.diff             = diff
         self.setup_cache      = utils.default(setup_cache, lambda: ansible.cache.FactCache())
@@ -190,7 +191,7 @@ class Runner(object):
         self.extra_vars       = utils.default(extra_vars, lambda: {})
 
         self.always_run       = None
-        self.connector        = connection.Connector(self)
+        self.connector        = connection.Connector(self) # 创建连接对象
         self.conditional      = conditional
         self.delegate_to      = None
         self.module_name      = module_name
@@ -226,14 +227,18 @@ class Runner(object):
             # If the transport is 'smart', check to see if certain conditions
             # would prevent us from using ssh, and fallback to paramiko.
             # 'smart' is the default since 1.2.1/1.3
-            self.transport = "ssh"
-            if sys.platform.startswith('darwin') and self.remote_pass:
+            #  -c CONNECTION, --connection=CONNECTION
+            # connection type to use (default=smart)
+            # smart为1.3以上版本的默认选择，smart会优先选择ssh方式，其次是paramiko
+            self.transport = "ssh" # 设置transport为ssh
+            if sys.platform.startswith('darwin') and self.remote_pass: # 如果是在OSX系统并使用remote_pass则使用paramiko
                 # due to a current bug in sshpass on OSX, which can trigger
                 # a kernel panic even for non-privileged users, we revert to
                 # paramiko on that OS when a SSH password is specified
                 self.transport = "paramiko"
             else:
                 # see if SSH can support ControlPersist if not use paramiko
+                # 检测系统是否支持SSH的ControlPersist功能，如果不支持则使用paramiko
                 try:
                     cmd = subprocess.Popen(['ssh','-o','ControlPersist'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     (out, err) = cmd.communicate()
@@ -244,21 +249,24 @@ class Runner(object):
 
         # save the original transport, in case it gets
         # changed later via options like accelerate
+        # transport可能会被修改，这里先保存一下
         self.original_transport = self.transport
 
         # misc housekeeping
         if subset and self.inventory._subset is None:
             # don't override subset when passed from playbook
+            # 如果subnet不为空，则处理一下subset，在ad-hoc方式已经处理过，在playbook中之后在确认，留个Todo
+            # TODO:确认一下subset在playbook中的处理
             self.inventory.subset(subset)
 
         # If we get a pre-built list of hosts to run on, from say a playbook, use them.
         # Also where we will store the hosts to run on once discovered
         self.run_hosts = run_hosts
 
-        if self.transport == 'local':
+        if self.transport == 'local': # 如果transport是local，则将当前用户设置为remote_user
             self.remote_user = pwd.getpwuid(os.geteuid())[0]
 
-        if module_path is not None:
+        if module_path is not None: # 如果指定了module_path，则需要将其加到plugin目录中
             for i in module_path.split(os.pathsep):
                 utils.plugins.module_finder.add_directory(i)
 
@@ -576,6 +584,7 @@ class Runner(object):
             fileno = None
 
         try:
+            # 如果没有指定new_stdin，则使用标准输入
             self._new_stdin = new_stdin
             if not new_stdin and fileno is not None:
                 try:
@@ -585,7 +594,7 @@ class Runner(object):
                     # not a valid file descriptor, so we just rely on
                     # using the one that was passed in
                     pass
-
+            # 额。。。这里使用的还是new_stdin
             exec_rc = self._executor_internal(host, new_stdin)
             if type(exec_rc) != ReturnData:
                 raise Exception("unexpected return type: %s" % type(exec_rc))
@@ -606,18 +615,25 @@ class Runner(object):
 
     def get_combined_cache(self):
         # merge the VARS and SETUP caches for this host
+        # 将self.vars_cache和setup_cache的变量进行合并，以self.vars_cache中的变量为准
         combined_cache = self.setup_cache.copy()
         return utils.merge_hash(combined_cache, self.vars_cache)
 
     def get_inject_vars(self, host):
+
+        # 获取主机的所有变量
         host_variables = self.inventory.get_variables(host, vault_password=self.vault_pass)
+
+        #
         combined_cache = self.get_combined_cache()
 
         # use combined_cache and host_variables to template the module_vars
         # we update the inject variables with the data we're about to template
         # since some of the variables we'll be replacing may be contained there too
+        # 进行一些变量合并，以host_variables的变量为准
         module_vars_inject = utils.combine_vars(host_variables, combined_cache.get(host, {}))
         module_vars_inject = utils.combine_vars(self.module_vars, module_vars_inject)
+        # TODO: 2015-09-17 看到这一行
         module_vars = template.template(self.basedir, self.module_vars, module_vars_inject)
 
         # remove bad variables from the module vars, which may be in there due
@@ -665,6 +681,7 @@ class Runner(object):
 
     def _executor_internal(self, host, new_stdin):
         ''' executes any module one or more times '''
+        # 执行任意的模块一次或者多次
 
         # We build the proper injected dictionary for all future
         # templating operations in this run
@@ -1447,12 +1464,13 @@ class Runner(object):
         ''' xfer & run module on all matched hosts '''
 
         # find hosts that match the pattern
+        # ad-hoc模式的run_hosts并没有在初始化的时候传入，why？，所以ad-hoc模式下self.inventory.list_host调用了两遍
         if not self.run_hosts:
             self.run_hosts = self.inventory.list_hosts(self.pattern)
         hosts = self.run_hosts
         if len(hosts) == 0:
-            self.callbacks.on_no_hosts()
-            return dict(contacted={}, dark={})
+            self.callbacks.on_no_hosts() # 如果hosts为空，则输出错误信息
+            return dict(contacted={}, dark={}) # 返回结果
 
         global multiprocessing_runner
         multiprocessing_runner = self
@@ -1462,42 +1480,55 @@ class Runner(object):
         # to be ran once per group of hosts. Example module: pause,
         # run once per hostgroup, rather than pausing once per each
         # host.
+        # 加载action_loader,允许用户自己开发action_plugins
+        # action_plugins的路径可以放在3个地方：
+        # 1. 你的playbook的ansible目录
+        # 2. 你在ansible.cfg中配置的action_plugins目录列表
+        # 3. ansible的安装包目录的 runner/action_plugins 子目录中
+        # 其他的plugins相同
         p = utils.plugins.action_loader.get(self.module_name, self)
 
+        # 如果forks为0或forks数大于主机个数，则将forks设置为主机数目相同
         if self.forks == 0 or self.forks > len(hosts):
             self.forks = len(hosts)
 
+        # 如果加载的action_plugin存在BY_PASS_HOST_LOOP属性，或者self.run_once设置为True，则该任务只会运行一次
         if (p and (getattr(p, 'BYPASS_HOST_LOOP', None)) or self.run_once):
 
             # Expose the current hostgroup to the bypassing plugins
-            self.host_set = hosts
+            self.host_set = hosts # 将主机列表传递给 bypassing 插件的host_set属性
             # We aren't iterating over all the hosts in this
             # group. So, just choose the "delegate_to" host if that is defined and is
             # one of the targeted hosts, otherwise pick the first host in our group to
             # construct the conn object with.
+            # 如果指定了delegate_to，并且 delegate_to所指定的主机在hosts列表中，则会在delegate_to所指定的主机上运行一次，否则使用hosts列表中的第一个主机
             if self.delegate_to is not None and self.delegate_to in hosts:
                 host = self.delegate_to
             else:
                 host = hosts[0]
 
-            result_data = self._executor(host, None).result
+            result_data = self._executor(host, None).result # 在主机上执行并返回结果
             # Create a ResultData item for each host in this group
             # using the returned result. If we didn't do this we would
             # get false reports of dark hosts.
+            # 为hosts列表中的每个主机创建相同的ReturnData对象，将对象列表存储在results变量中。
             results = [ ReturnData(host=h, result=result_data, comm_ok=True) \
                            for h in hosts ]
             del self.host_set
 
-        elif self.forks > 1:
+        elif self.forks > 1: # 如果并发大于1（主机数量大于1）
             try:
-                results = self._parallel_exec(hosts)
+                results = self._parallel_exec(hosts) # 并发模式在主机列表中执行，将结果保存在results变量中
             except IOError, ie:
                 print ie.errno
                 if ie.errno == 32:
                     # broken pipe from Ctrl+C
+                    # 如果被Ctrl+C 打断，则报错，Ctrl+C会报出IOError，errno=32
+                    # 其实也可以判断是否是KeyboardInterrupt？
                     raise errors.AnsibleError("interrupted")
                 raise
         else:
+            # 如果是串行执行，则使用列表迭代方式依次调用self._executor函数执行
             results = [ self._executor(h, None) for h in hosts ]
 
         return self._partition_results(results)

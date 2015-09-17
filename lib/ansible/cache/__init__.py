@@ -24,10 +24,11 @@ from ansible import errors
 
 
 class FactCache(MutableMapping):
-    # MutableMapping 抽象类的实现，用来缓存Fact数据
+    # MutableMapping 抽象类的实现，用来缓存Fact数据。
+    # 实现了get(),set(k,v),del,in,range(),len() 集中方法
 
     def __init__(self, *args, **kwargs):
-        self._plugin = utils.plugins.cache_loader.get(C.CACHE_PLUGIN)
+        self._plugin = utils.plugins.cache_loader.get(C.CACHE_PLUGIN) # 加载缓存插件
         if self._plugin is None:
             return
 

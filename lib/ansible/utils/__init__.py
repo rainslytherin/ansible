@@ -823,22 +823,27 @@ def merge_hash(a, b):
     ''' recursively merges hash b into a
     keys from b take precedence over keys from a '''
 
+    # 递归将hash b merge进 hash a，b中的key具有优先级
+
     result = {}
 
     # we check here as well as in combine_vars() since this
     # function can work recursively with nested dicts
+    # 验证两个hash 变量是否都是字典类型
     _validate_both_dicts(a, b)
 
-    for dicts in a, b:
+    for dicts in a, b: # 遍历a、b两个字典，先遍历a
         # next, iterate over b keys and values
         for k, v in dicts.iteritems():
             # if there's already such key in a
             # and that key contains dict
             if k in result and isinstance(result[k], dict):
                 # merge those dicts recursively
+                # 如果在b中发现某个key已经缓存在result中，且value为字典类型，则递归merge，以b为准
                 result[k] = merge_hash(a[k], v)
             else:
                 # otherwise, just copy a value from b to a
+                # 如果该key不在result中，或者在result中但不是字典类型，则将其存入，b中的key如果在a中出现，则会使用b覆盖
                 result[k] = v
 
     return result
@@ -956,6 +961,9 @@ def getch():
 
 def sanitize_output(arg_string):
     ''' strips private info out of a string '''
+    # 将输入的arg_string字符串中涉及到私密信息的数据加密，
+    # 如果有明显的password和login_password字样，则使用VALUE_HIDDEN替代。
+    # 否则经过heuristic_log_sanitize 函数再处理一次
 
     private_keys = ('password', 'login_password')
 

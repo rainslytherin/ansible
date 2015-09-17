@@ -51,10 +51,12 @@ if constants.DEFAULT_LOG_PATH != '':
 callback_plugins = []
 
 def load_callback_plugins():
+    # 加载全部的 callback 插件
     global callback_plugins
     callback_plugins = [x for x in utils.plugins.callback_loader.all()]
 
 def get_cowsay_info():
+    # cowsay，在屏幕上显示一只奶牛，忽略
     if constants.ANSIBLE_NOCOWS:
         return (None, None)
     cowsay = None
@@ -99,6 +101,7 @@ def log_lockfile():
 LOG_LOCK = log_lockfile()
 
 def log_flock(runner):
+    # 利用系统的fcntl.lockf给runner加锁，如果runner为None，则使用全局的LOG_LOCK
     if runner is not None:
         try:
             fcntl.lockf(runner.output_lockfile, fcntl.LOCK_EX)
@@ -113,6 +116,7 @@ def log_flock(runner):
 
 
 def log_unflock(runner):
+    # 利用系统的fcntl.lockf给runner解锁，如果runner为None，则使用全局的LOG_LOCK
     if runner is not None:
         try:
             fcntl.lockf(runner.output_lockfile, fcntl.LOCK_UN)
@@ -127,6 +131,7 @@ def log_unflock(runner):
 
 def set_playbook(callback, playbook):
     ''' used to notify callback plugins of playbook context '''
+    # 通知回调插件playbook内容，之后看一下会有什么用处
     callback.playbook = playbook
     for callback_plugin in callback_plugins:
         callback_plugin.playbook = playbook
@@ -145,7 +150,7 @@ def set_task(callback, task):
 
 def display(msg, color=None, stderr=False, screen_only=False, log_only=False, runner=None):
     # prevent a very rare case of interlaced multiprocess I/O
-    # 每调用一次display函数之前先创建一个文件锁
+    # 每调用一次display函数之前先创建一个文件锁，防止多进程的日志安全
     log_flock(runner)
     msg2 = msg
     if color:
@@ -177,13 +182,15 @@ def call_callback_module(method_name, *args, **kwargs):
     for callback_plugin in callback_plugins:
         # a plugin that set self.disabled to True will not be called
         # see osx_say.py example for such a plugin
+        # plugin加载，如果plugin有disabled属性，则跳过
         if getattr(callback_plugin, 'disabled', False):
             continue
+        # 获取plugin中与method_name相同的方法，同时获取on_any方法
         methods = [
             getattr(callback_plugin, method_name, None),
             getattr(callback_plugin, 'on_any', None)
         ]
-        for method in methods:
+        for method in methods: # 如果方法不为None，则调用该方法
             if method is not None:
                 method(*args, **kwargs)
 

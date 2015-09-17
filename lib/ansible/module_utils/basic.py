@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # This code is part of Ansible, but is an independent component.
 # This particular file snippet, and this file snippet only, is BSD licensed.
 # Modules you write using this snippet, which is embedded dynamically by Ansible
@@ -125,6 +126,7 @@ except ImportError:
 try:
     from ast import literal_eval as _literal_eval
 except ImportError:
+    # 为支持python2.4版本而开发的_literal_eval函数
     # a replacement for literal_eval that works with python 2.4. from: 
     # https://mail.python.org/pipermail/python-list/2009-September/551880.html
     # which is essentially a cut/past from an earlier (2.6) version of python's
@@ -184,10 +186,12 @@ PASSWD_ARG_RE = re.compile(r'^[-]{0,2}pass[-]?(word|wd)?')
 
 def get_platform():
     ''' what's the platform?  example: Linux is a platform. '''
+    # 返回操作平台类型：Linux，Unix，OSX，Windows
     return platform.system()
 
 def get_distribution():
     ''' return the distribution name '''
+    # 获取操作系统类型：Centos，Ubuntu，这些都是基础类库，可以复用在其他的项目中
     if platform.system() == 'Linux':
         try:
             distribution = platform.linux_distribution()[0].capitalize()
@@ -206,6 +210,7 @@ def get_distribution():
 
 def get_distribution_version():
     ''' return the distribution version '''
+    # 获取操作系统版本：5.8，6.3
     if platform.system() == 'Linux':
         try:
             distribution_version = platform.linux_distribution()[1]
@@ -244,6 +249,7 @@ def load_platform_subclass(cls, *args, **kwargs):
 
 
 def json_dict_unicode_to_bytes(d):
+    # 将字典的key和value从unicode转换成utf-8编码的字符串，结果还是字典
     ''' Recursively convert dict keys and values to byte str
 
         Specialized for json return because this only handles, lists, tuples,
@@ -262,6 +268,7 @@ def json_dict_unicode_to_bytes(d):
         return d
 
 def json_dict_bytes_to_unicode(d):
+    # 将字典的key和value转换成unicode格式，结果仍然是字典。
     ''' Recursively convert dict keys and values to byte str
 
         Specialized for json return because this only handles, lists, tuples,
@@ -280,6 +287,7 @@ def json_dict_bytes_to_unicode(d):
         return d
 
 def heuristic_log_sanitize(data):
+    # 将日志中含有user:pass@格式的pass替换成******
     ''' Remove strings that look like passwords from log messages '''
     # Currently filters:
     # user:pass@foo/whatever and http://username:pass@wherever/foo
@@ -299,7 +307,7 @@ def heuristic_log_sanitize(data):
     while sep:
         # Find the potential end of a passwd
         try:
-            end = data.rindex('@', 0, begin)
+            end = data.rindex('@', 0, begin) # 从右向左查找"@"字符
         except ValueError:
             # No passwd in the rest of the data
             output.insert(0, data[0:begin])
