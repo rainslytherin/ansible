@@ -92,6 +92,7 @@ def _executor_hook(job_queue, result_queue, new_stdin):
 
 class HostVars(dict):
     ''' A special view of vars_cache that adds values from the inventory when needed. '''
+    # hostvars = HostVars(temp_vars, self.inventory, vault_password=self.vault_pass)
 
     def __init__(self, vars_cache, inventory, vault_password=None):
         self.vars_cache = vars_cache
@@ -595,13 +596,16 @@ class Runner(object):
                     # using the one that was passed in
                     pass
             # 额。。。这里使用的还是new_stdin
+            # 调用_executor_internal 执行命令，将结果保存在exec_rc中
             exec_rc = self._executor_internal(host, new_stdin)
+            # 判断exec_rc的实例类型，为什么不用isintance函数？
             if type(exec_rc) != ReturnData:
                 raise Exception("unexpected return type: %s" % type(exec_rc))
             # redundant, right?
             if not exec_rc.comm_ok:
                 self.callbacks.on_unreachable(host, exec_rc.result)
             return exec_rc
+        # 异常处理，仍然返回ReturnData对象
         except errors.AnsibleError, ae:
             msg = to_bytes(ae)
             self.callbacks.on_unreachable(host, msg)
@@ -620,8 +624,10 @@ class Runner(object):
         return utils.merge_hash(combined_cache, self.vars_cache)
 
     def get_inject_vars(self, host):
-
-        # 获取主机的所有变量
+        # TODO:该函数展示了变量加载的先后顺序，可以用来画变量加载顺序图。
+        # TODO: 第一次看该函数是用ad-hoc测试，之后要使用最复杂的role来测试，从而清楚的理解role加载的详细过程。
+        # 获取主机的所有变量，包括变量加载的先后顺序
+        #
         host_variables = self.inventory.get_variables(host, vault_password=self.vault_pass)
 
         #
@@ -633,7 +639,7 @@ class Runner(object):
         # 进行一些变量合并，以host_variables的变量为准
         module_vars_inject = utils.combine_vars(host_variables, combined_cache.get(host, {}))
         module_vars_inject = utils.combine_vars(self.module_vars, module_vars_inject)
-        # TODO: 2015-09-17 看到这一行
+        # TODO: 2015-09-17 看到这一行，先跳过这一行
         module_vars = template.template(self.basedir, self.module_vars, module_vars_inject)
 
         # remove bad variables from the module vars, which may be in there due
@@ -647,25 +653,34 @@ class Runner(object):
         inject = {}
 
         # default vars are the lowest priority
+        # default vars是最低优先级
         inject = utils.combine_vars(inject, self.default_vars)
+        # 然后是inventory中的主机变量
         # next come inventory variables for the host
         inject = utils.combine_vars(inject, host_variables)
+        # 然后是facts setup_cache
         # then the setup_cache which contains facts gathered
         inject = utils.combine_vars(inject, self.setup_cache.get(host, {}))
+        # 然后是playbook中的vars区段，或则vars文件，先加载vars区段
         # next come variables from vars and vars files
         inject = utils.combine_vars(inject, self.play_vars)
         inject = utils.combine_vars(inject, self.play_file_vars)
+        # 然后是role中的vars/main.yml文件
         # next come variables from role vars/main.yml files
         inject = utils.combine_vars(inject, self.role_vars)
+        # 然后是模块变量
         # then come the module variables
         inject = utils.combine_vars(inject, module_vars)
+        # 然后是缓存在vars_cache中的数据
         # followed by vars_cache things (set_fact, include_vars, and
         # vars_files which had host-specific templating done)
         inject = utils.combine_vars(inject, self.vars_cache.get(host, {}))
         # role parameters next
         inject = utils.combine_vars(inject, self.role_params)
+        # 最后加载 -e 参数输入的额外变量，-e参数输入的变量具有最高优先级
         # and finally -e vars are the highest priority
         inject = utils.combine_vars(inject, self.extra_vars)
+        # 设置特殊变量，这些特殊变量经常会在某些场景中被使用到
         # and then special vars
         inject.setdefault('ansible_ssh_user', self.remote_user)
         inject['group_names']  = host_variables.get('group_names', [])
@@ -685,10 +700,59 @@ class Runner(object):
 
         # We build the proper injected dictionary for all future
         # templating operations in this run
+        # 将所有变量加载到inject中
+        # 以 ansible -i hosts test -m "command" -a "echo {{ name }}" -e "name=xinyu.zhao" 为例的inject结果为：
+        """
+        {
+            "inventory_hostname": "10.201.51.190",
+            "name": "xinyu.zhao",
+            "vars": {},
+            "inventory_hostname_short": "10",
+            "playbook_dir": "/home/apps/ansible",
+            "omit": "__omit_place_holder__1407ae9372e20e2dfc2f58dfb8cce34504116ef7",
+            "environment": null,
+            "ansible_ssh_user": "apps",
+            "defaults": {},
+            "groups": {
+                "master1": [
+                    "10.201.43.174"
+                ],
+                "all": [
+                    "10.201.43.176",
+                    "10.201.43.174",
+                    "10.201.43.175",
+                    "10.201.51.190"
+                ],
+                "slave": [
+                    "10.201.43.175"
+                ],
+                "ungrouped": [
+                    "10.201.43.176"
+                ],
+                "cluster": [
+                    "10.201.43.174",
+                    "10.201.43.175"
+                ],
+                "master": [
+                    "10.201.43.174"
+                ],
+                "test": [
+                    "10.201.51.190"
+                ]
+            },
+            "group_names": [
+                "test"
+            ],
+            "combined_cache": {},
+            "port": 4321
+        }
+        """
         inject = self.get_inject_vars(host)
 
         # Then we selectively merge some variable dictionaries down to a
         # single dictionary, used to template the HostVars for this host
+        # 选择性的合并一些变量字典到temp_vars，来创建一个HostVars对象
+        # TODO:为什么要创建temp_vars？而不是直接使用temp_vars
         temp_vars = self.inventory.get_variables(host, vault_password=self.vault_pass)
         temp_vars = utils.combine_vars(temp_vars, inject['combined_cache'] )
         temp_vars = utils.combine_vars(temp_vars, {'groups': inject['groups']})
@@ -696,12 +760,15 @@ class Runner(object):
         temp_vars = utils.combine_vars(temp_vars, self.play_file_vars)
         temp_vars = utils.combine_vars(temp_vars, self.extra_vars)
 
+        # 创建一个HostVars对象
         hostvars = HostVars(temp_vars, self.inventory, vault_password=self.vault_pass)
 
         # and we save the HostVars in the injected dictionary so they
         # may be referenced from playbooks/templates
+        # 将hostvars存储在inject变量中，以便在playbooks/templates中参考
         inject['hostvars'] = hostvars
 
+        # 获取连接类型，如果为None则使用默认transports及相关端口号
         host_connection = inject.get('ansible_connection', self.transport)
         if host_connection in [ 'paramiko', 'ssh', 'accelerate' ]:
             port = hostvars.get('ansible_ssh_port', self.remote_port)
@@ -709,21 +776,27 @@ class Runner(object):
                 port = C.DEFAULT_REMOTE_PORT
         else:
             # fireball, local, etc
+            # fireball模式、local模式，以及其他可能的模式的设置
             port = self.remote_port
 
+        # 设置inventory 目录
         if self.inventory.basedir() is not None:
             inject['inventory_dir'] = self.inventory.basedir()
 
+        # 设置inventory 文件
         if self.inventory.src() is not None:
             inject['inventory_file'] = self.inventory.src()
 
         # could be already set by playbook code
+        # 设置ansible版本
         inject.setdefault('ansible_version', utils.version_info(gitinfo=False))
 
         # allow with_foo to work in playbooks...
+        # 允许 with_foo 等 lookup plugins在playbooks中可运行
         items = None
         items_plugin = self.module_vars.get('items_lookup_plugin', None)
 
+        # TODO:先跳过
         if items_plugin is not None and items_plugin in utils.plugins.lookup_loader:
 
             basedir = self.basedir
@@ -804,7 +877,7 @@ class Runner(object):
             return returned_args
 
         # logic to decide how to run things depends on whether with_items is used
-        if items is None:
+        if items is None: # 如果没有with_items语句
             complex_args = _safe_template_complex_args(self.complex_args, inject)
             return self._executor_internal_inner(host, self.module_name, self.module_args, inject, port, complex_args=complex_args)
         elif len(items) > 0:
@@ -864,19 +937,21 @@ class Runner(object):
 
     def _executor_internal_inner(self, host, module_name, module_args, inject, port, is_chained=False, complex_args=None):
         ''' decides how to invoke a module '''
+        # 决定如何调用模块
 
         # late processing of parameterized become_user (with_items,..)
         if self.become_user_var is not None:
             self.become_user = template.template(self.basedir, self.become_user_var, inject)
 
         # module_name may be dynamic (but cannot contain {{ ansible_ssh_user }})
+        # 获取module_name，module_name也可能是动态的使用模版，template.template用来将模版中的变量替换成真实的变量值
         module_name  = template.template(self.basedir, module_name, inject)
 
-        if module_name in utils.plugins.action_loader:
+        if module_name in utils.plugins.action_loader: # 判断模块是否在utils.plugins.action_loader中（ansible.runner.action_plugins目录
             if self.background != 0:
                 raise errors.AnsibleError("async mode is not supported with the %s module" % module_name)
             handler = utils.plugins.action_loader.get(module_name, self)
-        elif self.background == 0:
+        elif self.background == 0: # 如果模块是同步模块，则使用normal模块作为handler，否则使用async模块作为handler
             handler = utils.plugins.action_loader.get('normal', self)
         else:
             handler = utils.plugins.action_loader.get('async', self)
@@ -884,6 +959,7 @@ class Runner(object):
         if type(self.conditional) != list:
             self.conditional = [ self.conditional ]
 
+        # TODO:2015-09-22 今天看到这里
         for cond in self.conditional:
 
             if not utils.check_conditional(cond, self.basedir, inject, fail_on_undefined=self.error_on_undefined_vars):
@@ -898,14 +974,17 @@ class Runner(object):
         if getattr(handler, 'setup', None) is not None:
             handler.setup(module_name, inject)
         conn = None
+        # 获取真实的主机物理IP地址，如果设置ansible_ssh_host变量则使用，否则使用主机名作为服务器地址
         actual_host = inject.get('ansible_ssh_host', host)
         # allow ansible_ssh_host to be templated
+        # ansible_ssh_host 变量允许使用jinja2模版
         actual_host = template.template(self.basedir, actual_host, inject, fail_on_undefined=True)
         actual_port = port
         actual_user = inject.get('ansible_ssh_user', self.remote_user)
         actual_pass = inject.get('ansible_ssh_pass', self.remote_pass)
         actual_transport = inject.get('ansible_connection', self.transport)
         actual_private_key_file = inject.get('ansible_ssh_private_key_file', self.private_key_file)
+        # ansible_ssh_private_key_file 也允许使用模版
         actual_private_key_file = template.template(self.basedir, actual_private_key_file, inject, fail_on_undefined=True)
 
         self.become = utils.boolean(inject.get('ansible_become', inject.get('ansible_sudo', inject.get('ansible_su', self.become))))
@@ -917,12 +996,14 @@ class Runner(object):
         # select default root user in case self.become requested
         # but no user specified; happens e.g. in host vars when
         # just ansible_become=True is specified
+        # 设置默认的sudo user 为root
         if self.become and self.become_user is None:
             self.become_user = 'root'
 
         if actual_private_key_file is not None:
             actual_private_key_file = os.path.expanduser(actual_private_key_file)
 
+        # 如果使用了加速模式，并且transport不是“local”
         if self.accelerate and actual_transport != 'local':
             #Fix to get the inventory name of the host to accelerate plugin
             if inject.get('ansible_ssh_host', None):

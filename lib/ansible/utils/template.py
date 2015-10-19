@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # (c) 2012, Michael DeHaan <michael.dehaan@gmail.com>
 #
 # This file is part of Ansible
@@ -44,6 +45,7 @@ class Globals(object):
 
 def _get_filters():
     ''' return filter plugin instances '''
+    # 返回所有的filter plugin
 
     if Globals.FILTERS is not None:
         return Globals.FILTERS
@@ -59,6 +61,7 @@ def _get_filters():
 
 def _get_extensions():
     ''' return jinja2 extensions to load '''
+    # 加载jinja2扩展配置
 
     '''
     if some extensions are set via jinja_extensions in ansible.cfg, we try
@@ -116,7 +119,9 @@ def template(basedir, varname, templatevars, lookup_fatal=True, depth=0, expand_
             if first_part in templatevars and '{{' not in varname and '$' not in varname:
                 varname = "{{%s}}" % varname
 
+        # 如果变量是普通的字符串
         if isinstance(varname, basestring):
+            # 判断变量中是否含有 '{{' 或 '{%'
             if '{{' in varname or '{%' in varname:
                 try:
                     varname = template_from_string(basedir, varname, templatevars, fail_on_undefined)

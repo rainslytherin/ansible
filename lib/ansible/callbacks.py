@@ -408,15 +408,20 @@ class CliRunnerCallbacks(DefaultRunnerCallbacks):
         super(CliRunnerCallbacks, self).on_ok(host, res)
 
     def on_unreachable(self, host, res):
+        # 主机不可达的结果处理
         if type(res) == dict:
             res = res.get('msg','')
         res = to_bytes(res)
+        # 调用display函数将错误信息输入到标准错误输出
         display("%s | FAILED => %s" % (host, res), stderr=True, color='red', runner=self.runner)
+        # 如果通过 --tree 指定了日志输出目录，则调用write_tree_file方法将错误写到响应的以主机名为文件名的日志文件中
         if self.options.tree:
             utils.write_tree_file(
                 self.options.tree, host,
                 utils.jsonify(dict(failed=True, msg=res),format=True)
             )
+
+        # 调用父类的on_unreachable方法
         super(CliRunnerCallbacks, self).on_unreachable(host, res)
 
     def on_skipped(self, host, item=None):
